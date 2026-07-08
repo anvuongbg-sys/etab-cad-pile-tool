@@ -1,0 +1,33 @@
+{
+  "etab_file": "",
+  "output_directory": "output",
+  "pile_configs": {
+    "bearing_capacity": 500,
+    "pile_diameter": 0.8,
+    "pile_length": 15.0,
+    "min_distance": 3.0,
+    "max_distance": 10.0,
+    "grid_type": "flexible",
+    "grid_spacing": 4.0,
+    "load_safety_factor": 1.3,
+    "eccentricity_limit": 0.15
+  },
+  "column_info": {
+    "column_width": 0.5,
+    "column_height": 0.5,
+    "foundation_depth": 1.5
+  },
+  "output_format": {
+    "csv": true,
+    "json": true,
+    "dwg": false,
+    "report": true
+  },
+  "cad_settings": {
+    "pile_layer": "PILE",
+    "pile_color": 256,
+    "pile_linetype": "CONTINUOUS",
+    "text_height": 0.3,
+    "units": "Meters"
+  }
+}
