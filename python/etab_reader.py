@@ -1,59 +1,98 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
-Module đọc file ETAB (Etabs 2020-2023)
-Hỗ trợ đọc nội lực tại chân cột (joint forces)
+Module: etab_reader.py
+Đọc dữ liệu từ file ETAB (CSV/Excel) và xử lý thông tin cột
 """
-import os
-from typing import List, Dict, Tuple, Optional
-import pandas as pd
 
-class ColumnData:
-    """Class lưu trữ dữ liệu một cột"""
+import os
+import csv
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+
+class Column:
+    """Lớp biểu diễn một cột trong ETAB"""
     
-    def __init__(self, col_id: str, x: float, y: float, z: float):
+    def __init__(self, col_id: str, x: float = 0, y: float = 0, z: float = 0):
         """
+        Khởi tạo cột
+        
         Args:
-            col_id: ID của cột
-            x, y, z: Tọa độ cột (m)
+            col_id: ID cột (J1, J2, ...)
+            x, y, z: Tọa độ cột
         """
         self.col_id = col_id
-        self.x = x
-        self.y = y
-        self.z = z
-        self.forces = {}  # {load_case: (Px, Py, Pz, Mx, My, Mz)}
+        self.x = float(x)
+        self.y = float(y)
+        self.z = float(z)
+        self.load_cases = {}  # {load_case: {force_dict}}
     
-    def add_force(self, load_case: str, px: float, py: float, pz: float, 
-                  mx: float, my: float, mz: float):
-        """Thêm nội lực cho load case"""
-        self.forces[load_case] = {
-            'Px': px, 'Py': py, 'Pz': pz,
-            'Mx': mx, 'My': my, 'Mz': mz
-        }
+    def add_force(self, load_case: str, px: float = 0, py: float = 0, pz: float = 0,
+                  mx: float = 0, my: float = 0, mz: float = 0):
+        """
+        Thêm lực cho một load case
+        
+        Args:
+            load_case: Tên load case (LC1, LC2, ...)
+            px, py, pz: Lực ngang và dọc (tấn)
+            mx, my, mz: Momen (tấn.m)
+        """
+        if load_case not in self.load_cases:
+            self.load_cases[load_case] = {}
+        
+        self.load_cases[load_case]['Px'] = float(px)
+        self.load_cases[load_case]['Py'] = float(py)
+        self.load_cases[load_case]['Pz'] = float(pz)
+        self.load_cases[load_case]['Mx'] = float(mx)
+        self.load_cases[load_case]['My'] = float(my)
+        self.load_cases[load_case]['Mz'] = float(mz)
     
     def get_max_vertical_force(self) -> Tuple[str, float]:
         """
-        Lấy lực dọc lớn nhất (để kiểm soát)
+        Lấy lực dọc lớn nhất (Pz âm = nén)
         
         Returns:
-            (load_case, force_value)
+            (load_case, max_pz)
         """
-        max_pz = 0
-        max_case = None
+        if not self.load_cases:
+            return '', 0
         
-        for case, forces in self.forces.items():
-            pz = abs(forces['Pz'])
+        max_case = ''
+        max_pz = 0
+        
+        for case, forces in self.load_cases.items():
+            pz = abs(forces.get('Pz', 0))
             if pz > max_pz:
                 max_pz = pz
                 max_case = case
         
-        return max_case, max_pz
+        # Trả về giá trị âm (theo quy ước ETAB)
+        return max_case, -max_pz if max_pz > 0 else 0
     
     def get_max_horizontal_force(self) -> Tuple[str, float]:
-        """Lấy lực ngang lớn nhất"""
-        max_ph = 0
-        max_case = None
+        """
+        Lấy lực ngang lớn nhất (kết hợp Px và Py)
         
-        for case, forces in self.forces.items():
-            ph = (forces['Px']**2 + forces['Py']**2)**0.5
+        Returns:
+            (load_case, max_ph)
+        """
+        if not self.load_cases:
+            return '', 0
+        
+        max_case = ''
+        max_ph = 0
+        
+        for case, forces in self.load_cases.items():
+            px = forces.get('Px', 0)
+            py = forces.get('Py', 0)
+            ph = (px**2 + py**2)**0.5
+            
             if ph > max_ph:
                 max_ph = ph
                 max_case = case
@@ -61,199 +100,219 @@ class ColumnData:
         return max_case, max_ph
     
     def get_max_moment(self) -> Tuple[str, float]:
-        """Lấy momen lớn nhất"""
-        max_m = 0
-        max_case = None
+        """
+        Lấy momen lớn nhất (kết hợp Mx và My)
         
-        for case, forces in self.forces.items():
-            m = (forces['Mx']**2 + forces['My']**2)**0.5
+        Returns:
+            (load_case, max_moment)
+        """
+        if not self.load_cases:
+            return '', 0
+        
+        max_case = ''
+        max_m = 0
+        
+        for case, forces in self.load_cases.items():
+            mx = forces.get('Mx', 0)
+            my = forces.get('My', 0)
+            m = (mx**2 + my**2)**0.5
+            
             if m > max_m:
                 max_m = m
                 max_case = case
         
         return max_case, max_m
     
-    def to_dict(self) -> dict:
-        """Convert thành dict"""
-        case, pz_max = self.get_max_vertical_force()
-        _, ph_max = self.get_max_horizontal_force()
-        _, m_max = self.get_max_moment()
-        
-        return {
-            'Column_ID': self.col_id,
-            'X': self.x,
-            'Y': self.y,
-            'Z': self.z,
-            'Pz_Max': pz_max,
-            'Ph_Max': ph_max,
-            'M_Max': m_max,
-            'Load_Cases': len(self.forces)
-        }
+    def __repr__(self):
+        return f"Column({self.col_id}, {self.x}, {self.y}, {self.z})"
 
 
 class ETABSReader:
-    """Class đọc dữ liệu từ file ETAB"""
+    """Lớp đọc và xử lý dữ liệu từ file ETAB"""
     
-    def __init__(self, etab_file: str):
-        """
-        Args:
-            etab_file: Đường dẫn file ETAB (.edb)
-        """
-        self.etab_file = etab_file
-        self.columns = {}  # {col_id: ColumnData}
-        self.load_cases = []
+    def __init__(self):
+        self.columns: Dict[str, Column] = {}
+        self.load_cases = set()
     
-    def read_from_csv(self, csv_file: str) -> Dict[str, ColumnData]:
+    def add_column(self, col_id: str, x: float, y: float, z: float) -> Column:
         """
-        Đọc từ file CSV đã export từ ETAB
-        
-        Format CSV expected:
-        Joint,X,Y,Z,LoadCase,Px,Py,Pz,Mx,My,Mz
+        Thêm một cột mới
         
         Args:
-            csv_file: Đường dẫn file CSV
+            col_id: ID cột
+            x, y, z: Tọa độ
         
         Returns:
-            Dict của ColumnData objects
+            Đối tượng Column được tạo
         """
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"CSV file not found: {csv_file}")
-        
-        df = pd.read_csv(csv_file)
-        
-        # Normalize column names
-        df.columns = df.columns.str.strip().str.upper()
-        
-        print(f"📊 Reading ETAB data from {csv_file}")
-        print(f"   Columns: {list(df.columns)}")
-        
-        # Đọc dữ liệu
-        for _, row in df.iterrows():
-            col_id = str(row.get('JOINT') or row.get('COL_ID') or row.get('COLUMN'))
-            
-            # Bỏ qua nếu không có ID
-            if pd.isna(col_id) or col_id == '':
-                continue
-            
-            x = float(row.get('X', 0))
-            y = float(row.get('Y', 0))
-            z = float(row.get('Z', 0))
-            
-            load_case = str(row.get('LOADCASE', row.get('CASE', 'DEFAULT')))
-            
-            px = float(row.get('PX', 0))
-            py = float(row.get('PY', 0))
-            pz = float(row.get('PZ', 0))
-            mx = float(row.get('MX', 0))
-            my = float(row.get('MY', 0))
-            mz = float(row.get('MZ', 0))
-            
-            # Tạo hoặc cập nhật cột
-            if col_id not in self.columns:
-                self.columns[col_id] = ColumnData(col_id, x, y, z)
-            
-            self.columns[col_id].add_force(load_case, px, py, pz, mx, my, mz)
-            
-            # Lưu load cases
-            if load_case not in self.load_cases:
-                self.load_cases.append(load_case)
-        
-        print(f"✅ Read {len(self.columns)} columns")
-        print(f"✅ Found {len(self.load_cases)} load cases")
-        
-        return self.columns
+        if col_id not in self.columns:
+            self.columns[col_id] = Column(col_id, x, y, z)
+        return self.columns[col_id]
     
-    def read_from_excel(self, excel_file: str, sheet_name: str = 0) -> Dict[str, ColumnData]:
+    def add_force_to_column(self, col_id: str, load_case: str, 
+                           px: float = 0, py: float = 0, pz: float = 0,
+                           mx: float = 0, my: float = 0, mz: float = 0):
         """
-        Đọc từ file Excel
+        Thêm lực vào một cột
         
         Args:
-            excel_file: Đường dẫn file Excel
-            sheet_name: Tên sheet (default là sheet đầu tiên)
-        
-        Returns:
-            Dict của ColumnData objects
+            col_id: ID cột
+            load_case: Tên load case
+            Lực và momen
         """
-        if not os.path.exists(excel_file):
-            raise FileNotFoundError(f"Excel file not found: {excel_file}")
+        if col_id not in self.columns:
+            self.add_column(col_id, 0, 0, 0)
         
-        df = pd.read_excel(excel_file, sheet_name=sheet_name)
-        
-        # Tạo CSV tạm và đọc
-        temp_csv = "temp_etab_data.csv"
-        df.to_csv(temp_csv, index=False)
-        
-        try:
-            result = self.read_from_csv(temp_csv)
-        finally:
-            if os.path.exists(temp_csv):
-                os.remove(temp_csv)
-        
-        return result
+        self.columns[col_id].add_force(load_case, px, py, pz, mx, my, mz)
+        self.load_cases.add(load_case)
     
-    def get_column_summary(self) -> pd.DataFrame:
-        """Lấy bảng tóm tắt nội lực các cột"""
-        data = [col.to_dict() for col in self.columns.values()]
-        df = pd.DataFrame(data)
-        return df.sort_values('Pz_Max', ascending=False)
+    def get_column(self, col_id: str) -> Optional[Column]:
+        """Lấy cột theo ID"""
+        return self.columns.get(col_id)
     
-    def export_summary(self, output_file: str):
-        """Export bảng tóm tắt ra CSV"""
-        df = self.get_column_summary()
-        df.to_csv(output_file, index=False)
-        print(f"✅ Summary exported to {output_file}")
-    
-    def get_columns_by_load_range(self, pz_min: float, pz_max: float) -> List[ColumnData]:
-        """Lấy các cột có nội lực dọc trong khoảng [pz_min, pz_max]"""
-        result = []
-        for col in self.columns.values():
-            _, pz = col.get_max_vertical_force()
-            if pz_min <= pz <= pz_max:
-                result.append(col)
-        return result
+    def get_all_columns(self) -> List[Column]:
+        """Lấy tất cả cột"""
+        return list(self.columns.values())
     
     def __len__(self):
         return len(self.columns)
     
-    def __getitem__(self, col_id: str) -> Optional[ColumnData]:
-        return self.columns.get(col_id)
-    
     def __iter__(self):
         return iter(self.columns.values())
+    
+    def __repr__(self):
+        return f"ETABSReader({len(self.columns)} columns, {len(self.load_cases)} load cases)"
 
 
-# Hàm helper
 def load_etab_data(file_path: str) -> ETABSReader:
     """
-    Helper function để tải dữ liệu ETAB
+    Tải dữ liệu ETAB từ file CSV hoặc Excel
     
     Args:
-        file_path: Đường dẫn file ETAB/CSV/Excel
+        file_path: Đường dẫn file ETAB
     
     Returns:
-        ETABSReader object
+        Đối tượng ETABSReader
+    
+    Raises:
+        FileNotFoundError: Nếu file không tồn tại
+        ValueError: Nếu format file không hợp lệ
     """
-    reader = ETABSReader(file_path)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
     
-    if file_path.endswith('.csv'):
-        reader.read_from_csv(file_path)
-    elif file_path.endswith(('.xlsx', '.xls')):
-        reader.read_from_excel(file_path)
+    file_ext = Path(file_path).suffix.lower()
+    
+    if file_ext == '.csv':
+        return _load_csv(file_path)
+    elif file_ext in ['.xlsx', '.xls']:
+        return _load_excel(file_path)
     else:
-        raise ValueError(f"Unsupported file format: {file_path}")
-    
-    return reader
+        raise ValueError(f"Unsupported file format: {file_ext}")
 
 
-if __name__ == "__main__":
-    # Test example
-    import sys
+def _load_csv(file_path: str) -> ETABSReader:
+    """
+    Tải dữ liệu từ file CSV
     
-    if len(sys.argv) > 1:
-        data_file = sys.argv[1]
-        reader = load_etab_data(data_file)
+    CSV format expected:
+    Joint,X,Y,Z,LoadCase,Px,Py,Pz,Mx,My,Mz
+    """
+    reader = ETABSReader()
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            csv_reader = csv.DictReader(f)
+            
+            if not csv_reader.fieldnames:
+                raise ValueError("CSV file is empty")
+            
+            # Kiểm tra các cột bắt buộc
+            required_cols = ['Joint', 'X', 'Y', 'Z', 'LoadCase', 'Px', 'Py', 'Pz']
+            missing_cols = [col for col in required_cols if col not in csv_reader.fieldnames]
+            if missing_cols:
+                raise ValueError(f"Missing required columns: {missing_cols}")
+            
+            for row in csv_reader:
+                if not row['Joint'] or row['Joint'].strip() == '':
+                    continue
+                
+                try:
+                    joint_id = row['Joint'].strip()
+                    x = float(row['X'])
+                    y = float(row['Y'])
+                    z = float(row['Z'])
+                    load_case = row['LoadCase'].strip()
+                    px = float(row['Px'])
+                    py = float(row['Py'])
+                    pz = float(row['Pz'])
+                    mx = float(row.get('Mx', 0))
+                    my = float(row.get('My', 0))
+                    mz = float(row.get('Mz', 0))
+                    
+                    # Thêm/cập nhật cột
+                    if joint_id not in reader.columns:
+                        reader.add_column(joint_id, x, y, z)
+                    
+                    reader.add_force_to_column(joint_id, load_case, px, py, pz, mx, my, mz)
+                
+                except ValueError as e:
+                    print(f"Warning: Skipped row {row} - {e}")
+                    continue
         
-        print("\n📋 Column Summary:")
-        print(reader.get_column_summary())
-    else:
-        print("Usage: python etab_reader.py <data_file.csv|xlsx>")
+        return reader
+    
+    except Exception as e:
+        raise ValueError(f"Error reading CSV file: {e}")
+
+
+def _load_excel(file_path: str) -> ETABSReader:
+    """
+    Tải dữ liệu từ file Excel
+    """
+    if pd is None:
+        raise ImportError("pandas is required to read Excel files. Install with: pip install pandas openpyxl")
+    
+    reader = ETABSReader()
+    
+    try:
+        # Đọc sheet đầu tiên
+        df = pd.read_excel(file_path, sheet_name=0)
+        
+        # Kiểm tra các cột bắt buộc
+        required_cols = ['Joint', 'X', 'Y', 'Z', 'LoadCase', 'Px', 'Py', 'Pz']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        for _, row in df.iterrows():
+            if pd.isna(row['Joint']) or str(row['Joint']).strip() == '':
+                continue
+            
+            try:
+                joint_id = str(row['Joint']).strip()
+                x = float(row['X'])
+                y = float(row['Y'])
+                z = float(row['Z'])
+                load_case = str(row['LoadCase']).strip()
+                px = float(row['Px'])
+                py = float(row['Py'])
+                pz = float(row['Pz'])
+                mx = float(row.get('Mx', 0)) if 'Mx' in df.columns else 0
+                my = float(row.get('My', 0)) if 'My' in df.columns else 0
+                mz = float(row.get('Mz', 0)) if 'Mz' in df.columns else 0
+                
+                # Thêm/cập nhật cột
+                if joint_id not in reader.columns:
+                    reader.add_column(joint_id, x, y, z)
+                
+                reader.add_force_to_column(joint_id, load_case, px, py, pz, mx, my, mz)
+            
+            except (ValueError, TypeError) as e:
+                print(f"Warning: Skipped row - {e}")
+                continue
+        
+        return reader
+    
+    except Exception as e:
+        raise ValueError(f"Error reading Excel file: {e}")
